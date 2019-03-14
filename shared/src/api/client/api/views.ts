@@ -1,9 +1,11 @@
 import { ProxyValue, proxyValue, proxyValueSymbol } from '@sourcegraph/comlink'
-import { ReplaySubject, Unsubscribable } from 'rxjs'
+import { from, of, ReplaySubject, Unsubscribable } from 'rxjs'
 import { map } from 'rxjs/operators'
 import { PanelView } from 'sourcegraph'
 import { ContributableViewContainer, TextDocumentPositionParams } from '../../protocol'
+import { modelToTextDocumentPositionParams } from '../model'
 import { TextDocumentLocationProviderIDRegistry } from '../services/location'
+import { ModelService } from '../services/modelService'
 import { PanelViewWithComponent, ViewProviderRegistry } from '../services/view'
 
 /** @internal */
@@ -24,7 +26,8 @@ export class ClientViews implements ClientViewsAPI {
 
     constructor(
         private viewRegistry: ViewProviderRegistry,
-        private textDocumentLocations: TextDocumentLocationProviderIDRegistry
+        private textDocumentLocations: TextDocumentLocationProviderIDRegistry,
+        private modelService: ModelService
     ) {}
 
     public $registerPanelViewProvider(provider: { id: string }): PanelUpdater {
@@ -34,18 +37,28 @@ export class ClientViews implements ClientViewsAPI {
         const registryUnsubscribable = this.viewRegistry.registerProvider(
             { ...provider, container: ContributableViewContainer.Panel },
             panelView.pipe(
-                map(
-                    ({ title, content, priority, component }) =>
-                        ({
-                            title,
-                            content,
-                            priority,
-                            locationProvider: component
-                                ? (params: TextDocumentPositionParams) =>
-                                      this.textDocumentLocations.getLocations(component.locationProvider, params)
-                                : undefined,
-                        } as PanelViewWithComponent)
-                )
+                map(({ title, content, priority, component }) => {
+                    const panelView: PanelViewWithComponent = {
+                        title,
+                        content,
+                        priority,
+                        locationProvider: from(this.modelService.model).pipe(
+                            map(model => {
+                                if (!component) {
+                                    return of(null)
+                                }
+                                const params: TextDocumentPositionParams | null = modelToTextDocumentPositionParams(
+                                    model
+                                )
+                                if (!params) {
+                                    return of(null)
+                                }
+                                return this.textDocumentLocations.getLocations(component.locationProvider, params)
+                            })
+                        ),
+                    }
+                    return panelView
+                })
             )
         )
         return proxyValue({
